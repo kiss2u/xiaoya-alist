@@ -19,12 +19,14 @@ export PATH
 #
 # Copyright (c) 2024 DDSRem <https://blog.ddsrem.com>
 #
-# This is free software, licensed under the Mit License.
+# This is free software, licensed under the GNU General Public License v3.0.
 #
 # ——————————————————————————————————————————————————————————————————————————————————
 #
-DATE_VERSION="v1.6.8-2024_07_21_16_14"
+DATE_VERSION="v1.7.1-2024_08_09_12_50"
 #
+# ——————————————————————————————————————————————————————————————————————————————————
+amilys_embyserver_latest_version=4.8.8.0
 # ——————————————————————————————————————————————————————————————————————————————————
 
 Sky_Blue="\e[36m"
@@ -437,7 +439,10 @@ function container_update() {
         docker_pull "ddsderek/runlike:latest"
     fi
     INFO "获取 ${1} 容器信息中..."
-    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/tmp ddsderek/runlike "${@}" > "/tmp/container_update_${*}"
+    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/tmp ddsderek/runlike -p "${@}" > "/tmp/container_update_${*}"
+    if [ -n "${container_update_extra_command}" ]; then
+        eval "${container_update_extra_command}"
+    fi
     run_image=$(docker container inspect -f '{{.Config.Image}}' "${@}")
     remove_image=$(docker images -q ${run_image})
     local retries=0
@@ -479,8 +484,8 @@ function container_update() {
             docker rmi "${remove_image}" > /dev/null 2>&1
         fi
         if [ "${IMAGE_MIRROR}" != "docker.io" ]; then
-            docker tag "${IMAGE_MIRROR}/${1}" "${1}" > /dev/null 2>&1
-            docker rmi "${IMAGE_MIRROR}/${1}" > /dev/null 2>&1
+            docker tag "${IMAGE_MIRROR}/${run_image}" "${run_image}" > /dev/null 2>&1
+            docker rmi "${IMAGE_MIRROR}/${run_image}" > /dev/null 2>&1
         fi
         if bash "/tmp/container_update_${*}"; then
             rm -f "/tmp/container_update_${*}"
@@ -511,7 +516,7 @@ function wait_emby_start() {
             WARN "Emby 未正常启动超时 10 分钟！"
             break
         fi
-        sleep 3
+        sleep 8
     done
 
 }
@@ -550,22 +555,31 @@ function wait_xiaoya_start() {
                 break
             fi
         fi
-        if [ "$elapsed_time" -gt 300 ]; then
-            WARN "小雅alist 未正常启动超时 5 分钟！"
+        if [ "$elapsed_time" -gt 600 ]; then
+            WARN "小雅alist 未正常启动超时 10 分钟！"
             break
         fi
-        sleep 3
+        sleep 8
     done
+
+}
+
+function clear_qrcode_container() {
+
+    # shellcheck disable=SC2046
+    docker rm -f $(docker ps -a -q --filter ancestor=ddsderek/xiaoya-glue:quark_cookie) > /dev/null 2>&1
+    # shellcheck disable=SC2046
+    docker rm -f $(docker ps -a -q --filter ancestor=ddsderek/xiaoya-glue:python) > /dev/null 2>&1
 
 }
 
 function check_quark_cookie() {
 
-    if [[ ! -f "${CONFIG_DIR}/quark_cookie.txt" ]] && [[ ! -s "${CONFIG_DIR}/quark_cookie.txt" ]]; then
+    if [[ ! -f "${1}/quark_cookie.txt" ]] && [[ ! -s "${1}/quark_cookie.txt" ]]; then
         return 1
     fi
-    local cookie user_agent url headers response status state_url sign_daily_reward sign_daily_reward_mb
-    cookie=$(head -n1 "${CONFIG_DIR}/quark_cookie.txt")
+    local cookie user_agent url headers response status state_url sign_daily_reward sign_daily_reward_mb url2 response2 member member_type vip_88
+    cookie=$(head -n1 "${1}/quark_cookie.txt")
     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
     url="https://drive-pc.quark.cn/1/clouddrive/config?pr=ucpro&fr=pc&uc_param_str="
     headers="Cookie: $cookie; User-Agent: $user_agent; Referer: https://pan.quark.cn"
@@ -575,7 +589,22 @@ function check_quark_cookie() {
         ERROR "无效夸克 Cookie"
         return 1
     elif [ "$status" == "200" ]; then
-        INFO "有效夸克 Cookie"
+        url2="https://drive-pc.quark.cn/1/clouddrive/member?pr=ucpro&fr=pc&uc_param_str=&fetch_subscribe=true&_ch=home&fetch_identity=true"
+        response2=$(curl -s -H "$headers" "$url2")
+        member=$(echo $response2 | grep -o '"member_type":"[^"]*"' | sed 's/"member_type":"\(.*\)"/\1/')
+        if [ $member == 'EXP_SVIP' ] || [ $member == 'SVIP' ]; then
+            vip_88=$(echo $response2 | grep -o '"vip88_new":[t|f]' | cut -f2 -d:)
+            if [ $vip_88 == 't' ]; then
+                member_type="88VIP会员"
+            else
+                member_type="SVIP会员"
+            fi
+        elif [ $member == 'NORMAL' ]; then
+            member_type="普通用户"
+        else
+            member_type="${member//\"/}会员"
+        fi
+        INFO "有效夸克 Cookie，${member_type}"
         state_url="https://drive-m.quark.cn/1/clouddrive/capacity/growth/info?pr=ucpro&fr=pc&uc_param_str="
         response=$(curl -s -H "$headers" "$state_url")
         sign_daily_reward=$(echo "$response" | cut -f6 -d\{ | cut -f4 -d: | cut -f1 -d,)
@@ -593,11 +622,11 @@ function check_quark_cookie() {
 
 function check_uc_cookie() {
 
-    if [[ ! -f "${CONFIG_DIR}/uc_cookie.txt" ]] && [[ ! -s "${CONFIG_DIR}/uc_cookie.txt" ]]; then
+    if [[ ! -f "${1}/uc_cookie.txt" ]] && [[ ! -s "${1}/uc_cookie.txt" ]]; then
         return 1
     fi
     local cookie user_agent url headers response status referer set_cookie
-    cookie=$(head -n1 "${CONFIG_DIR}/uc_cookie.txt")
+    cookie=$(head -n1 "${1}/uc_cookie.txt")
     referer="https://drive.uc.cn"
     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
     url="https://pc-api.uc.cn/1/clouddrive/file/sort?pr=UCBrowser&fr=pc&pdir_fid=0&_page=1&_size=50&_fetch_total=1&_fetch_sub_dirs=0&_sort=file_type:asc,updated_at:desc"
@@ -612,7 +641,7 @@ function check_uc_cookie() {
         local new_puus new_cookie
         new_puus=$(echo "$set_cookie" | cut -f2 -d: | cut -f1 -d\;)
         new_cookie=${cookie//__puus=[^;]*/$new_puus}
-        echo "$new_cookie" > ${CONFIG_DIR}/uc_cookie.txt
+        echo "$new_cookie" > ${1}/uc_cookie.txt
         INFO "有效 UC Cookie 并更新"
         return 0
     elif [ -z "${set_cookie}" ] && [ "${status}" == "200" ]; then
@@ -627,26 +656,408 @@ function check_uc_cookie() {
 
 function check_115_cookie() {
 
-    if [[ ! -f "${CONFIG_DIR}/115_cookie.txt" ]] && [[ ! -s "${CONFIG_DIR}/115_cookie.txt" ]]; then
+    if [[ ! -f "${1}/115_cookie.txt" ]] && [[ ! -s "${1}/115_cookie.txt" ]]; then
         return 1
     fi
     local cookie user_agent url headers response vip
-    cookie=$(head -n1 "${CONFIG_DIR}/115_cookie.txt")
-    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
+    cookie=$(head -n1 "${1}/115_cookie.txt")
+    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
     url="https://my.115.com/?ct=ajax&ac=nav"
-    headers="Cookie: $cookie; User-Agent: $user_agent; Referer: https://appversion.115.com/1/web/1.0/api/chrome"
+    headers="Cookie: $cookie; User-Agent: $user_agent; Referer: https://115.com/"
     response=$(curl -s -D - -H "$headers" "$url")
     vip=$(echo -e "$response" | grep -o '"vip":[^,]*' | sed 's/"vip"://')
     if echo -e "${response}" | grep -q "user_id"; then
         if [ $vip == "0" ]; then
-            INFO "尊敬的白嫖用户，您的 115 Cookie 有效"
+            INFO "有效 115 Cookie，普通用户"
         else
-            INFO "尊敬的VIP用户，您的 115 Cookie 有效"
+            INFO "有效 115 Cookie，VIP用户"
         fi
         return 0
     else
         ERROR "请求失败，请检查 Cookie 或网络连接是否正确。"
         return 1
+    fi
+
+}
+
+function qrcode_aliyunpan_tvtoken() {
+
+    clear_qrcode_container
+    cpu_arch=$(uname -m)
+    case $cpu_arch in
+    "x86_64" | *"amd64"* | "aarch64" | *"arm64"* | *"armv8"* | *"arm/v8"*)
+        INFO "阿里云盘 TV Token 配置"
+        local config_dir local_ip
+        docker_pull ddsderek/xiaoya-glue:python
+        config_dir="$(docker inspect --format='{{range $v,$conf := .Mounts}}{{$conf.Source}}:{{$conf.Destination}}{{$conf.Type}}~{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" | tr '~' '\n' | grep bind | sed 's/bind//g' | grep ":/data$" | awk -F: '{print $1}')"
+        if [ -n "${config_dir}" ]; then
+            if [[ "${OSNAME}" = "macos" ]]; then
+                local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+            else
+                local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+            fi
+            if [ -z "${local_ip}" ]; then
+                local_ip="小雅服务器IP"
+            fi
+            INFO "请浏览器访问 http://${local_ip}:34256 并使用阿里云盘APP扫描二维码！"
+            docker run -i --rm \
+                -v "$config_dir:/data" \
+                -e LANG=C.UTF-8 \
+                --net=host \
+                ddsderek/xiaoya-glue:python \
+                /aliyuntvtoken/alitoken2.py
+            INFO "清理镜像中..."
+            docker rmi ddsderek/xiaoya-glue:python > /dev/null 2>&1
+            INFO "开始更新小雅容器..."
+            container_update "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
+            INFO "操作全部完成！"
+        else
+            ERROR "小雅配置文件目录获取失败咯！请检查小雅容器是否已创建！"
+            exit 1
+        fi
+        ;;
+    *)
+        WARN "目前阿里云盘 TV Token 扫码获取只支持amd64和arm64架构，你的架构是：$cpu_arch"
+        ;;
+    esac
+
+}
+
+function qrcode_aliyunpan_refreshtoken() {
+
+    clear_qrcode_container
+    cpu_arch=$(uname -m)
+    case $cpu_arch in
+    "x86_64" | *"amd64"* | "aarch64" | *"arm64"* | *"armv8"* | *"arm/v8"*)
+        INFO "阿里云盘 Refresh Token 配置"
+        local local_ip
+        INFO "拉取镜像中..."
+        docker_pull ddsderek/xiaoya-glue:python
+        if [[ "${OSNAME}" = "macos" ]]; then
+            local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+        else
+            local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+        fi
+        if [ -z "${local_ip}" ]; then
+            local_ip="小雅服务器IP"
+        fi
+        INFO "请浏览器访问 http://${local_ip}:34256 并使用阿里云盘APP扫描二维码！"
+        docker run -i --rm \
+            -v "${1}:/data" \
+            -e LANG=C.UTF-8 \
+            --net=host \
+            ddsderek/xiaoya-glue:python \
+            /aliyuntoken/aliyuntoken.py
+        INFO "清理镜像中..."
+        docker rmi ddsderek/xiaoya-glue:python > /dev/null 2>&1
+        INFO "操作全部完成！"
+        ;;
+    *)
+        WARN "目前阿里云盘 Refresh Token 扫码获取只支持amd64和arm64架构，你的架构是：$cpu_arch"
+        ;;
+    esac
+
+}
+
+function qrcode_aliyunpan_opentoken() {
+
+    clear_qrcode_container
+    cpu_arch=$(uname -m)
+    case $cpu_arch in
+    "x86_64" | *"amd64"* | "aarch64" | *"arm64"* | *"armv8"* | *"arm/v8"*)
+        INFO "阿里云盘 Open Token 配置"
+        local local_ip
+        INFO "拉取镜像中..."
+        docker_pull ddsderek/xiaoya-glue:python
+        if [[ "${OSNAME}" = "macos" ]]; then
+            local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+        else
+            local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+        fi
+        if [ -z "${local_ip}" ]; then
+            local_ip="小雅服务器IP"
+        fi
+        INFO "请浏览器访问 http://${local_ip}:34256 并使用阿里云盘APP扫描二维码！"
+        docker run -i --rm \
+            -v "${1}:/data" \
+            -e LANG=C.UTF-8 \
+            --net=host \
+            ddsderek/xiaoya-glue:python \
+            /aliyunopentoken/aliyunopentoken.py
+        INFO "清理镜像中..."
+        docker rmi ddsderek/xiaoya-glue:python > /dev/null 2>&1
+        INFO "操作全部完成！"
+        ;;
+    *)
+        WARN "目前阿里云盘 Open Token 扫码获取只支持amd64和arm64架构，你的架构是：$cpu_arch"
+        ;;
+    esac
+
+}
+
+function qrcode_115_cookie() {
+
+    clear_qrcode_container
+    cpu_arch=$(uname -m)
+    case $cpu_arch in
+    "x86_64" | *"amd64"* | "aarch64" | *"arm64"* | *"armv8"* | *"arm/v8"*)
+        INFO "115 Cookie 扫码获取"
+        local local_ip
+        INFO "拉取镜像中..."
+        docker_pull ddsderek/xiaoya-glue:python
+        if [[ "${OSNAME}" = "macos" ]]; then
+            local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+        else
+            local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+        fi
+        if [ -z "${local_ip}" ]; then
+            local_ip="小雅服务器IP"
+        fi
+        INFO "请浏览器访问 http://${local_ip}:34256 并使用阿里云盘APP扫描二维码！"
+        docker run -i --rm \
+            -v "${1}:/data" \
+            -e LANG=C.UTF-8 \
+            --net=host \
+            ddsderek/xiaoya-glue:python \
+            /115cookie/115cookie.py
+        INFO "清理镜像中..."
+        docker rmi ddsderek/xiaoya-glue:python > /dev/null 2>&1
+        INFO "操作全部完成！"
+        ;;
+    *)
+        WARN "目前 115 Cookie 扫码获取只支持amd64和arm64架构，你的架构是：$cpu_arch"
+        ;;
+    esac
+
+}
+
+function qrcode_quark_cookie() {
+
+    clear_qrcode_container
+    cpu_arch=$(uname -m)
+    case $cpu_arch in
+    "x86_64" | *"amd64"* | "aarch64" | *"arm64"* | *"armv8"* | *"arm/v8"*)
+        INFO "夸克 Cookie 扫码获取"
+        local local_ip
+        INFO "拉取镜像中..."
+        docker_pull ddsderek/xiaoya-glue:quark_cookie
+        if [[ "${OSNAME}" = "macos" ]]; then
+            local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+        else
+            local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+        fi
+        if [ -z "${local_ip}" ]; then
+            local_ip="小雅服务器IP"
+        fi
+        INFO "请稍等片刻直到 Flask 启动后浏览器访问 http://${local_ip}:34256 并使用夸克APP扫描二维码！"
+        docker run -i --rm \
+            -v "${1}:/data" \
+            -e LANG=C.UTF-8 \
+            --net=host \
+            ddsderek/xiaoya-glue:quark_cookie
+        INFO "清理镜像中..."
+        docker rmi ddsderek/xiaoya-glue:quark_cookie
+        INFO "操作全部完成！"
+        ;;
+    *)
+        WARN "目前夸克 Cookie 扫码获取只支持amd64和arm64架构，你的架构是：$cpu_arch"
+        ;;
+    esac
+
+}
+
+function enter_aliyunpan_refreshtoken() {
+
+    INFO "是否使用扫码自动 Token [Y/n]（默认 Y）"
+    read -erp "Token:" choose_qrcode_aliyunpan_refreshtoken
+    [[ -z "${choose_qrcode_aliyunpan_refreshtoken}" ]] && choose_qrcode_aliyunpan_refreshtoken="y"
+    if [[ ${choose_qrcode_aliyunpan_refreshtoken} == [Yy] ]]; then
+        qrcode_aliyunpan_refreshtoken "${1}"
+    fi
+    while true; do
+        mytokenfilesize=$(cat "${1}"/mytoken.txt)
+        mytokenstringsize=${#mytokenfilesize}
+        if [ "$mytokenstringsize" -le 31 ]; then
+            INFO "输入你的阿里云盘 Token（32位长）"
+            read -erp "TOKEN:" token
+            token_len=${#token}
+            if [ "$token_len" -ne 32 ]; then
+                ERROR "长度不对,阿里云盘 Token是32位长"
+                ERROR "安装停止，请参考指南配置文件: https://xiaoyaliu.notion.site/xiaoya-docker-69404af849504fa5bcf9f2dd5ecaa75f"
+            else
+                echo "$token" > "${1}"/mytoken.txt
+                break
+            fi
+        else
+            break
+        fi
+    done
+
+}
+
+function settings_aliyunpan_refreshtoken() {
+
+    if [ "${2}" == "force" ]; then
+        enter_aliyunpan_refreshtoken "${1}"
+    else
+        mytokenfilesize=$(cat "${1}"/mytoken.txt)
+        mytokenstringsize=${#mytokenfilesize}
+        if [ "$mytokenstringsize" -le 31 ]; then
+            enter_aliyunpan_refreshtoken "${1}"
+        fi
+    fi
+
+}
+
+function enter_aliyunpan_opentoken() {
+
+    INFO "是否使用扫码自动 Token [Y/n]（默认 Y）"
+    read -erp "Token:" choose_qrcode_aliyunpan_opentoken
+    [[ -z "${choose_qrcode_aliyunpan_opentoken}" ]] && choose_qrcode_aliyunpan_opentoken="y"
+    if [[ ${choose_qrcode_aliyunpan_opentoken} == [Yy] ]]; then
+        qrcode_aliyunpan_opentoken "${1}"
+    fi
+    while true; do
+        myopentokenfilesize=$(cat "${1}"/myopentoken.txt)
+        myopentokenstringsize=${#myopentokenfilesize}
+        if [ "$myopentokenstringsize" -le 279 ]; then
+            INFO "输入你的阿里云盘 Open Token（280位长或者335位长）"
+            read -erp "OPENTOKEN:" opentoken
+            opentoken_len=${#opentoken}
+            if [[ "$opentoken_len" -ne 280 ]] && [[ "$opentoken_len" -ne 335 ]]; then
+                ERROR "长度不对,阿里云盘 Open Token是280位长或者335位"
+                ERROR "安装停止，请参考指南配置文件: https://xiaoyaliu.notion.site/xiaoya-docker-69404af849504fa5bcf9f2dd5ecaa75f"
+            else
+                echo "$opentoken" > "${1}"/myopentoken.txt
+                break
+            fi
+        else
+            break
+        fi
+    done
+
+}
+
+function settings_aliyunpan_opentoken() {
+
+    if [ "${2}" == "force" ]; then
+        qrcode_aliyunpan_opentoken "${1}"
+    else
+        myopentokenfilesize=$(cat "${1}"/myopentoken.txt)
+        myopentokenstringsize=${#myopentokenfilesize}
+        if [ "$myopentokenstringsize" -le 279 ]; then
+            qrcode_aliyunpan_opentoken "${1}"
+        fi
+    fi
+
+}
+
+function enter_115_cookie() {
+
+    touch ${1}/115_cookie.txt
+    INFO "是否使用扫码自动 Cookie [Y/n]（默认 Y）"
+    read -erp "Cookie:" choose_qrcode_115_cookie
+    [[ -z "${choose_qrcode_115_cookie}" ]] && choose_qrcode_115_cookie="y"
+    if [[ ${choose_qrcode_115_cookie} == [Yy] ]]; then
+        qrcode_115_cookie "${1}"
+    fi
+    if ! check_115_cookie "${1}"; then
+        WARN "扫码获取115 Cookie 失败，请手动获取！"
+        while true; do
+            INFO "输入你的 115 Cookie"
+            read -erp "Cookie:" set_115_cookie
+            echo -e "${set_115_cookie}" > ${1}/115_cookie.txt
+            if check_115_cookie "${1}"; then
+                break
+            fi
+        done
+    fi
+
+}
+
+function settings_115_cookie() {
+
+    if [ "${2}" == "force" ]; then
+        enter_115_cookie "${1}"
+    else
+        if [ ! -f "${1}/115_cookie.txt" ] || ! check_115_cookie "${1}"; then
+            INFO "是否配置 115 Cookie [Y/n]（默认 n 不配置）"
+            read -erp "Cookie:" choose_115_cookie
+            [[ -z "${choose_115_cookie}" ]] && choose_115_cookie="n"
+            if [[ ${choose_115_cookie} == [Yy] ]]; then
+                enter_115_cookie "${1}"
+            fi
+        fi
+    fi
+
+}
+
+function enter_quark_cookie() {
+
+    touch ${1}/quark_cookie.txt
+    INFO "是否使用扫码自动 Cookie [Y/n]（默认 Y）"
+    read -erp "Cookie:" choose_qrcode_quark_cookie
+    [[ -z "${choose_qrcode_quark_cookie}" ]] && choose_qrcode_quark_cookie="y"
+    if [[ ${choose_qrcode_quark_cookie} == [Yy] ]]; then
+        qrcode_quark_cookie "${1}"
+    fi
+    if ! check_quark_cookie "${1}"; then
+        while true; do
+            INFO "输入你的 夸克 Cookie"
+            read -erp "Cookie:" quark_cookie
+            echo -e "${quark_cookie}" > ${1}/quark_cookie.txt
+            if check_quark_cookie "${1}"; then
+                break
+            fi
+        done
+    fi
+
+}
+
+function settings_quark_cookie() {
+
+    if [ "${2}" == "force" ]; then
+        enter_quark_cookie "${1}"
+    else
+        if [ ! -f "${1}/quark_cookie.txt" ] || ! check_quark_cookie "${1}"; then
+            INFO "是否配置 夸克 Cookie [Y/n]（默认 n 不配置）"
+            read -erp "Cookie:" choose_quark_cookie
+            [[ -z "${choose_quark_cookie}" ]] && choose_quark_cookie="n"
+            if [[ ${choose_quark_cookie} == [Yy] ]]; then
+                enter_quark_cookie "${1}"
+            fi
+        fi
+    fi
+
+}
+
+function enter_uc_cookie() {
+
+    touch ${1}/uc_cookie.txt
+    while true; do
+        INFO "输入你的 UC Cookie"
+        read -erp "Cookie:" uc_cookie
+        echo -e "${uc_cookie}" > ${1}/uc_cookie.txt
+        if check_uc_cookie "${1}"; then
+            break
+        fi
+    done
+
+}
+
+function settings_uc_cookie() {
+
+    if [ "${2}" == "force" ]; then
+        enter_uc_cookie "${1}"
+    else
+        if [ ! -f "${1}/uc_cookie.txt" ] || ! check_uc_cookie "${1}"; then
+            INFO "是否配置 UC Cookie [Y/n]（默认 n 不配置）"
+            read -erp "Cookie:" choose_uc_cookie
+            [[ -z "${choose_uc_cookie}" ]] && choose_uc_cookie="n"
+            if [[ ${choose_uc_cookie} == [Yy] ]]; then
+                enter_uc_cookie "${1}"
+            fi
+        fi
     fi
 
 }
@@ -720,10 +1131,96 @@ function data_crep() { # container_run_extra_parameters
             echo "None"
         fi
     elif [ "${MODE}" == "write" ] || [ "${MODE}" == "w" ]; then
-        echo "${extra_parameters}" > ${DIR}/${DATA}.txt
+        if [ "${extra_parameters}" == "None" ]; then
+            echo > ${DIR}/${DATA}.txt
+        else
+            echo "${extra_parameters}" > ${DIR}/${DATA}.txt
+        fi
+        cat ${DIR}/${DATA}.txt | head -n1
     else
         return 1
     fi
+
+}
+
+function main_account_management() {
+
+    clear
+
+    local config_dir
+    if docker container inspect "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" > /dev/null 2>&1; then
+        config_dir="$(docker inspect --format='{{range $v,$conf := .Mounts}}{{$conf.Source}}:{{$conf.Destination}}{{$conf.Type}}~{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" | tr '~' '\n' | grep bind | sed 's/bind//g' | grep ":/data$" | awk -F: '{print $1}')"
+    fi
+    if [ -z "${config_dir}" ]; then
+        get_config_dir
+        config_dir=${CONFIG_DIR}
+    fi
+
+    echo -e "——————————————————————————————————————————————————————————————————————————————————"
+    echo -e "${Blue}账号管理${Font}\n"
+    echo -ne "${INFO} 界面加载中...${Font}\r"
+    echo -e "1、115 Cookie                        （当前：$(if CHECK_OUT=$(check_115_cookie "${config_dir}"); then echo -e "${Green}$(echo -e ${CHECK_OUT} | sed 's/\[.*\] //')${Font}"; else echo -e "${Red}错误${Font}"; fi)）
+2、夸克 Cookie                       （当前：$(if CHECK_OUT=$(check_quark_cookie "${config_dir}"); then echo -e "${Green}$(echo -e ${CHECK_OUT} | sed 's/\[.*\] //')${Font}"; else echo -e "${Red}错误${Font}"; fi)）
+3、阿里云盘 Refresh Token（mytoken） （当前：$(if [ -f "${config_dir}/mytoken.txt" ]; then echo -e "${Green}已配置${Font}"; else echo -e "${Red}未配置${Font}"; fi)）
+4、阿里云盘 Open Token（myopentoken）（当前：$(if [ -f "${config_dir}/myopentoken.txt" ]; then echo -e "${Green}已配置${Font}"; else echo -e "${Red}未配置${Font}"; fi)）
+5、UC Cookie                         （当前：$(if CHECK_OUT=$(check_uc_cookie "${config_dir}"); then echo -e "${Green}$(echo -e ${CHECK_OUT} | sed 's/\[.*\] //')${Font}"; else echo -e "${Red}错误${Font}"; fi)）"
+    echo -e "6、应用配置（自动重启小雅，并返回上级菜单）"
+    echo -e "0、返回上级（从此处退出不会重启小雅，如果更改了上述配置请手动重启）"
+    echo -e "——————————————————————————————————————————————————————————————————————————————————"
+    read -erp "请输入数字 [0-6]:" num
+    case "$num" in
+    1)
+        clear
+        settings_115_cookie "${config_dir}" force
+        main_account_management
+        ;;
+    2)
+        clear
+        settings_quark_cookie "${config_dir}" force
+        main_account_management
+        ;;
+    3)
+        clear
+        settings_aliyunpan_refreshtoken "${config_dir}" force
+        main_account_management
+        ;;
+    4)
+        clear
+        settings_aliyunpan_opentoken "${config_dir}" force
+        main_account_management
+        ;;
+    5)
+        clear
+        settings_uc_cookie "${CONFIG_DIR}" force
+        main_account_management
+        ;;
+    6)
+        clear
+        if docker container inspect "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" > /dev/null 2>&1; then
+            INFO "重启小雅容器中..."
+            docker restart "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
+            wait_xiaoya_start
+        else
+            WARN "您未安装小雅，请先安装小雅容器！"
+        fi
+        if docker container inspect xiaoya-115cleaner > /dev/null 2>&1; then
+            docker restart xiaoya-115cleaner
+        fi
+        INFO "配置保存完成，按任意键返回菜单！"
+        read -rs -n 1 -p ""
+        clear
+        main_xiaoya_alist
+        ;;
+    0)
+        clear
+        main_xiaoya_alist
+        ;;
+    *)
+        clear
+        ERROR '请输入正确数字 [0-6]'
+        main_account_management
+        ;;
+    esac
 
 }
 
@@ -748,35 +1245,9 @@ function install_xiaoya_alist() {
         fi
     done
 
-    mytokenfilesize=$(cat "${CONFIG_DIR}"/mytoken.txt)
-    mytokenstringsize=${#mytokenfilesize}
-    if [ "$mytokenstringsize" -le 31 ]; then
-        INFO "输入你的阿里云盘 Token（32位长）"
-        read -erp "TOKEN:" token
-        token_len=${#token}
-        if [ "$token_len" -ne 32 ]; then
-            ERROR "长度不对,阿里云盘 Token是32位长"
-            ERROR "安装停止，请参考指南配置文件: https://xiaoyaliu.notion.site/xiaoya-docker-69404af849504fa5bcf9f2dd5ecaa75f"
-            exit 1
-        else
-            echo "$token" > "${CONFIG_DIR}"/mytoken.txt
-        fi
-    fi
+    settings_aliyunpan_refreshtoken "${CONFIG_DIR}"
 
-    myopentokenfilesize=$(cat "${CONFIG_DIR}"/myopentoken.txt)
-    myopentokenstringsize=${#myopentokenfilesize}
-    if [ "$myopentokenstringsize" -le 279 ]; then
-        INFO "输入你的阿里云盘 Open Token（280位长或者335位长）"
-        read -erp "OPENTOKEN:" opentoken
-        opentoken_len=${#opentoken}
-        if [[ "$opentoken_len" -ne 280 ]] && [[ "$opentoken_len" -ne 335 ]]; then
-            ERROR "长度不对,阿里云盘 Open Token是280位长或者335位"
-            ERROR "安装停止，请参考指南配置文件: https://xiaoyaliu.notion.site/xiaoya-docker-69404af849504fa5bcf9f2dd5ecaa75f"
-            exit 1
-        else
-            echo "$opentoken" > "${CONFIG_DIR}"/myopentoken.txt
-        fi
-    fi
+    settings_aliyunpan_opentoken "${CONFIG_DIR}"
 
     folderidfilesize=$(cat "${CONFIG_DIR}"/temp_transfer_folder_id.txt)
     folderidstringsize=${#folderidfilesize}
@@ -808,61 +1279,20 @@ function install_xiaoya_alist() {
         fi
     fi
 
-    if [ ! -f "${CONFIG_DIR}/quark_cookie.txt" ] || ! check_quark_cookie; then
-        INFO "是否配置 夸克 Cookie [Y/n]（默认 n 不配置）"
-        read -erp "Cookie:" choose_quark_cookie
-        [[ -z "${choose_quark_cookie}" ]] && choose_quark_cookie="n"
-        if [[ ${choose_quark_cookie} == [Yy] ]]; then
-            touch ${CONFIG_DIR}/quark_cookie.txt
-            while true; do
-                INFO "输入你的 夸克 Cookie"
-                read -erp "Cookie:" quark_cookie
-                echo -e "${quark_cookie}" > ${CONFIG_DIR}/quark_cookie.txt
-                if check_quark_cookie; then
-                    break
-                fi
-            done
-        fi
-    fi
+    settings_quark_cookie "${CONFIG_DIR}"
 
-    if [ ! -f "${CONFIG_DIR}/uc_cookie.txt" ] || ! check_uc_cookie; then
-        INFO "是否配置 UC Cookie [Y/n]（默认 n 不配置）"
-        read -erp "Cookie:" choose_uc_cookie
-        [[ -z "${choose_uc_cookie}" ]] && choose_uc_cookie="n"
-        if [[ ${choose_uc_cookie} == [Yy] ]]; then
-            touch ${CONFIG_DIR}/uc_cookie.txt
-            while true; do
-                INFO "输入你的 UC Cookie"
-                read -erp "Cookie:" uc_cookie
-                echo -e "${uc_cookie}" > ${CONFIG_DIR}/uc_cookie.txt
-                if check_uc_cookie; then
-                    break
-                fi
-            done
-        fi
-    fi
+    settings_uc_cookie "${CONFIG_DIR}"
 
-    if [ ! -f "${CONFIG_DIR}/115_cookie.txt" ] || ! check_115_cookie; then
-        INFO "是否配置 115 Cookie [Y/n]（默认 n 不配置）"
-        read -erp "Cookie:" choose_115_cookie
-        [[ -z "${choose_115_cookie}" ]] && choose_115_cookie="n"
-        if [[ ${choose_115_cookie} == [Yy] ]]; then
-            touch ${CONFIG_DIR}/115_cookie.txt
-            while true; do
-                INFO "输入你的 115 Cookie"
-                read -erp "Cookie:" set_115_cookie
-                echo -e "${set_115_cookie}" > ${CONFIG_DIR}/115_cookie.txt
-                if check_115_cookie; then
-                    break
-                fi
-            done
-        fi
-    fi
+    settings_115_cookie "${CONFIG_DIR}"
 
-    if command -v ifconfig > /dev/null 2>&1; then
-        localip=$(ifconfig -a | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1)
+    if [[ "${OSNAME}" = "macos" ]]; then
+        localip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
     else
-        localip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+        if command -v ifconfig > /dev/null 2>&1; then
+            localip=$(ifconfig -a | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1)
+        else
+            localip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+        fi
     fi
     INFO "本地IP：${localip}"
 
@@ -880,7 +1310,7 @@ function install_xiaoya_alist() {
         docker_command+=("--network=host")
     else
         docker_image="xiaoyaliu/alist:latest"
-        docker_command+=("-p 5678:80" "-p 2345:2345" "-p 2346:2346")
+        docker_command+=("-p 5678:80" "-p 2345:2345" "-p 2346:2346" "-p 2347:2347")
     fi
     if [[ -f ${CONFIG_DIR}/proxy.txt ]] && [[ -s ${CONFIG_DIR}/proxy.txt ]]; then
         proxy_url=$(head -n1 "${CONFIG_DIR}"/proxy.txt)
@@ -907,7 +1337,15 @@ function update_xiaoya_alist() {
         echo -en "即将开始更新小雅Alist${Blue} $i ${Font}\r"
         sleep 1
     done
+    cat > "/tmp/container_update_xiaoya_alist_run.sh" <<- EOF
+#!/bin/bash
+if ! grep -q '2347' "/tmp/container_update_$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"; then
+    sed -i '2s/^/-p 2347:2347 /' "/tmp/container_update_$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
+fi
+EOF
+    container_update_extra_command="bash /tmp/container_update_xiaoya_alist_run.sh"
     container_update "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
+    rm -f /tmp/container_update_xiaoya_alist_run.sh
 
 }
 
@@ -921,10 +1359,12 @@ function uninstall_xiaoya_alist() {
         echo -en "即将开始卸载小雅Alist${Blue} $i ${Font}\r"
         sleep 1
     done
-    IMAGE_NAME="$(docker inspect --format='{{.Config.Image}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_emby_name.txt)")"
+    IMAGE_NAME="$(docker inspect --format='{{.Config.Image}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)")"
+    VOLUMES="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{println .}}{{end}}{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" | cut -d' ' -f2 | awk 'NF' | tr '\n' ' ')"
     docker stop "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
     docker rm "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
     docker rmi "${IMAGE_NAME}"
+    docker volume rm ${VOLUMES}
     if [[ ${CLEAN_CONFIG} == [Yy] ]]; then
         INFO "清理配置文件..."
         if [ -f ${DDSREM_CONFIG_DIR}/xiaoya_alist_config_dir.txt ]; then
@@ -992,9 +1432,10 @@ function main_xiaoya_alist() {
     echo -e "2、更新"
     echo -e "3、卸载"
     echo -e "4、创建/删除 定时同步更新数据（${Red}功能已弃用，只提供删除${Font}）  当前状态：$(judgment_xiaoya_alist_sync_data_status)"
+    echo -e "5、账号管理"
     echo -e "0、返回上级"
     echo -e "——————————————————————————————————————————————————————————————————————————————————"
-    read -erp "请输入数字 [0-4]:" num
+    read -erp "请输入数字 [0-5]:" num
     case "$num" in
     1)
         clear
@@ -1044,13 +1485,17 @@ function main_xiaoya_alist() {
         fi
         return_menu "main_xiaoya_alist"
         ;;
+    5)
+        clear
+        main_account_management
+        ;;
     0)
         clear
         main_return
         ;;
     *)
         clear
-        ERROR '请输入正确数字 [0-4]'
+        ERROR '请输入正确数字 [0-5]'
         main_xiaoya_alist
         ;;
     esac
@@ -1250,6 +1695,9 @@ function unzip_xiaoya_emby() {
     if [ "${1}" == "config.mp4" ]; then
         extra_parameters="--workdir=/media"
 
+        if [ -d "${MEDIA_DIR}/config" ]; then
+            rm -rf ${MEDIA_DIR}/config
+        fi
         mkdir -p "${MEDIA_DIR}"/config
 
         config_size=$(du -k ${MEDIA_DIR}/temp/config.mp4 | cut -f1)
@@ -2577,8 +3025,25 @@ function get_xiaoya_hosts() { # 调用这个函数必须设置 $MODE 此变量
         if [[ "$response" == "302" || "$response" == "200" ]]; then
             INFO "hosts 文件设置正确，本机可以正常访问小雅容器！"
         else
-            ERROR "hosts 文件设置错误，本机无法正常访问小雅容器！"
-            exit 1
+            if [[ "${OSNAME}" = "macos" ]]; then
+                localip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+            else
+                if command -v ifconfig > /dev/null 2>&1; then
+                    localip=$(ifconfig -a | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1)
+                else
+                    localip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+                fi
+            fi
+            INFO "尝试使用本机IP：${localip}"
+            response="$(curl -s -o /dev/null -w '%{http_code}' http://${localip}:5678)"
+            if [[ "$response" == "302" || "$response" == "200" ]]; then
+                sedsh '/xiaoya.host/d' ${HOSTS_FILE_PATH}
+                echo -e "$localip\txiaoya.host\n" >> ${HOSTS_FILE_PATH}
+                INFO "hosts 文件设置成功，本机可以正常访问小雅容器！"
+            else
+                ERROR "hosts 文件设置错误，本机无法正常访问小雅容器！"
+                exit 1
+            fi
         fi
     fi
 
@@ -2594,7 +3059,11 @@ function install_emby_xiaoya_all_emby() {
             exit 1
         fi
     else
-        ERROR "Emby config 出错，请重新下载解压！"
+        if [ ! -f "${MEDIA_DIR}/temp/config.mp4" ]; then
+            ERROR "config.mp4 不存在，请下载此文件并解压！"
+        else
+            ERROR "Emby config 出错，请重新下载解压！"
+        fi
         exit 1
     fi
 
@@ -2671,44 +3140,69 @@ function install_emby_xiaoya_all_emby() {
                 INFO "请输入其他参数（默认 --device /dev/dri:/dev/dri --privileged -e GIDLIST=0,0 -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all ）"
                 read -erp "Extra parameters:" extra_parameters
                 [[ -z "${extra_parameters}" ]] && extra_parameters="--device /dev/dri:/dev/dri --privileged -e GIDLIST=0,0 -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all"
-                data_crep "write" "install_xiaoya_emby"
             else
                 INFO "已读取您上次设置的参数：${RETURN_DATA} (默认不更改回车继续，如果需要更改请输入新参数)"
                 read -erp "Extra parameters:" extra_parameters
                 [[ -z "${extra_parameters}" ]] && extra_parameters=${RETURN_DATA}
             fi
+            extra_parameters=$(data_crep "write" "install_xiaoya_emby")
         fi
 
         get_nsswitch_conf_path
 
         while true; do
-            if [ "${CHOOSE_EMBY}" == "amilys_embyserver" ]; then
+            case ${CHOOSE_EMBY} in
+            "amilys_embyserver")
                 cpu_arch=$(uname -m)
                 if [[ $cpu_arch == "aarch64" || $cpu_arch == *"arm64"* || $cpu_arch == *"armv8"* || $cpu_arch == *"arm/v8"* ]]; then
                     WARN "amilys/embyserver_arm64v8 镜像无法指定版本号，默认拉取 latest 镜像！"
                     IMAGE_VERSION=latest
                     break
+                else
+                    INFO "请选择 Emby 镜像版本 [ 1；4.8.0.56 | 2；latest（${amilys_embyserver_latest_version}） ]（默认 1）"
+                    read -erp "CHOOSE_IMAGE_VERSION:" CHOOSE_IMAGE_VERSION
+                    [[ -z "${CHOOSE_IMAGE_VERSION}" ]] && CHOOSE_IMAGE_VERSION="1"
+                    case ${CHOOSE_IMAGE_VERSION} in
+                    1)
+                        IMAGE_VERSION=4.8.0.56
+                        break
+                        ;;
+                    2)
+                        IMAGE_VERSION=latest
+                        break
+                        ;;
+                    *)
+                        ERROR "输入无效，请重新选择"
+                        ;;
+                    esac
                 fi
-            fi
-            if [ "${CHOOSE_EMBY}" == "install_lovechen_embyserver" ]; then
+                ;;
+            "install_lovechen_embyserver")
                 WARN "lovechen/embyserver 镜像无法指定版本号，默认拉取 4.7.14.0 镜像！"
                 IMAGE_VERSION=4.7.14.0
                 break
-            fi
-            INFO "请选择 Emby 镜像版本 [ 1；4.8.0.56 | 2；latest ]（默认 1）"
-            read -erp "CHOOSE_IMAGE_VERSION:" CHOOSE_IMAGE_VERSION
-            [[ -z "${CHOOSE_IMAGE_VERSION}" ]] && CHOOSE_IMAGE_VERSION="1"
-            case ${CHOOSE_IMAGE_VERSION} in
-            1)
-                IMAGE_VERSION=4.8.0.56
-                break
                 ;;
-            2)
-                IMAGE_VERSION=latest
-                break
-                ;;
-            *)
-                ERROR "输入无效，请重新选择"
+            "emby_embyserver")
+                INFO "请选择 Emby 镜像版本 [ 1；4.8.0.56 | 2；4.8.8.0 | 3；latest ]（默认 1）"
+                read -erp "CHOOSE_IMAGE_VERSION:" CHOOSE_IMAGE_VERSION
+                [[ -z "${CHOOSE_IMAGE_VERSION}" ]] && CHOOSE_IMAGE_VERSION="1"
+                case ${CHOOSE_IMAGE_VERSION} in
+                1)
+                    IMAGE_VERSION=4.8.0.56
+                    break
+                    ;;
+                2)
+                    IMAGE_VERSION=4.8.8.0
+                    break
+                    ;;
+                3)
+                    IMAGE_VERSION=latest
+                    break
+                    ;;
+                *)
+                    ERROR "输入无效，请重新选择"
+                    ;;
+                esac
                 ;;
             esac
         done
@@ -2740,6 +3234,134 @@ function install_emby_xiaoya_all_emby() {
     fi
 
     INFO "Emby安装完成！"
+
+}
+
+function oneclick_upgrade_emby() {
+
+    local emby_name
+    emby_name=$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_emby_name.txt)
+    if docker inspect ddsderek/runlike:latest > /dev/null 2>&1; then
+        local_sha=$(docker inspect --format='{{index .RepoDigests 0}}' ddsderek/runlike:latest 2> /dev/null | cut -f2 -d:)
+        remote_sha=$(curl -s -m 10 "https://hub.docker.com/v2/repositories/ddsderek/runlike/tags/latest" | grep -o '"digest":"[^"]*' | grep -o '[^"]*$' | tail -n1 | cut -f2 -d:)
+        if [ "$local_sha" != "$remote_sha" ]; then
+            docker rmi ddsderek/runlike:latest
+            docker_pull "ddsderek/runlike:latest"
+        fi
+    else
+        docker_pull "ddsderek/runlike:latest"
+    fi
+    INFO "获取 ${emby_name} 容器信息中..."
+    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/tmp ddsderek/runlike "${emby_name}" > "/tmp/container_update_${emby_name}"
+    old_image=$(docker container inspect -f '{{.Config.Image}}' "${emby_name}")
+    old_image_name="$(echo "${old_image}" | cut -d':' -f1)"
+    while true; do
+        if [ "${old_image_name}" == "amilys/embyserver" ] || [ "${old_image_name}" == "amilys/embyserver_arm64v8" ]; then
+            cpu_arch=$(uname -m)
+            if [[ $cpu_arch == "aarch64" || $cpu_arch == *"arm64"* || $cpu_arch == *"armv8"* || $cpu_arch == *"arm/v8"* ]]; then
+                WARN "amilys/embyserver_arm64v8 镜像无法指定版本号，默认重新拉取 latest 镜像更新容器！"
+                IMAGE_VERSION=latest
+                break
+            else
+                INFO "请选择 Emby 镜像版本 [ 1；latest（${amilys_embyserver_latest_version}）| 2；beta（此版本请勿轻易尝试）]（默认 1）"
+                read -erp "CHOOSE_IMAGE_VERSION:" CHOOSE_IMAGE_VERSION
+                [[ -z "${CHOOSE_IMAGE_VERSION}" ]] && CHOOSE_IMAGE_VERSION="1"
+                case ${CHOOSE_IMAGE_VERSION} in
+                1)
+                    IMAGE_VERSION=latest
+                    break
+                    ;;
+                2)
+                    IMAGE_VERSION=beta
+                    break
+                    ;;
+                *)
+                    ERROR "输入无效，请重新选择"
+                    ;;
+                esac
+            fi
+        elif [ "${old_image_name}" == "lovechen/embyserver" ]; then
+            WARN "lovechen/embyserver 镜像无法更新！"
+            exit 0
+        elif [ "${old_image_name}" == "emby/embyserver" ] || [ "${old_image_name}" == "emby/embyserver_arm64v8" ]; then
+            INFO "请选择 Emby 镜像版本 [ 1；4.8.8.0 | 2；latest | 3；beta（此版本请勿轻易尝试） ]（默认 1）"
+            read -erp "CHOOSE_IMAGE_VERSION:" CHOOSE_IMAGE_VERSION
+            [[ -z "${CHOOSE_IMAGE_VERSION}" ]] && CHOOSE_IMAGE_VERSION="1"
+            case ${CHOOSE_IMAGE_VERSION} in
+            1)
+                IMAGE_VERSION=4.8.8.0
+                break
+                ;;
+            2)
+                IMAGE_VERSION=latest
+                break
+                ;;
+            3)
+                IMAGE_VERSION=beta
+                break
+                ;;
+            *)
+                ERROR "输入无效，请重新选择"
+                ;;
+            esac
+        fi
+    done
+    run_image="$(echo "${old_image}" | cut -d':' -f1):${IMAGE_VERSION}"
+    remove_image=$(docker images -q ${old_image})
+    sedsh "s|${old_image}|${run_image}|g" "/tmp/container_update_${emby_name}"
+    INFO "${old_image} ${old_image_name} ${run_image} ${remove_image}"
+    local retries=0
+    local max_retries=3
+    IMAGE_MIRROR=$(cat "${DDSREM_CONFIG_DIR}/image_mirror.txt")
+    while [ $retries -lt $max_retries ]; do
+        if docker pull "${IMAGE_MIRROR}/${run_image}"; then
+            INFO "${emby_name} 镜像拉取成功！"
+            break
+        else
+            WARN "${emby_name} 镜像拉取失败，正在进行第 $((retries + 1)) 次重试..."
+            retries=$((retries + 1))
+        fi
+    done
+    if [ $retries -eq $max_retries ]; then
+        ERROR "镜像拉取失败，已达到最大重试次数！"
+        exit 1
+    else
+        if [ "${IMAGE_MIRROR}" != "docker.io" ]; then
+            pull_image=$(docker images -q "${IMAGE_MIRROR}/${run_image}")
+        else
+            pull_image=$(docker images -q "${run_image}")
+        fi
+        if ! docker stop "${emby_name}" > /dev/null 2>&1; then
+            if ! docker kill "${emby_name}" > /dev/null 2>&1; then
+                docker rmi "${IMAGE_MIRROR}/${run_image}"
+                ERROR "更新失败，停止 ${emby_name} 容器失败！"
+                exit 1
+            fi
+        fi
+        INFO "停止 ${emby_name} 容器成功！"
+        if ! docker rm --force "${emby_name}" > /dev/null 2>&1; then
+            ERROR "更新失败，删除 ${emby_name} 容器失败！"
+            exit 1
+        fi
+        INFO "删除 ${emby_name} 容器成功！"
+        if [ "${pull_image}" != "${remove_image}" ]; then
+            INFO "删除 ${remove_image} 镜像中..."
+            docker rmi "${remove_image}" > /dev/null 2>&1
+        fi
+        if [ "${IMAGE_MIRROR}" != "docker.io" ]; then
+            docker tag "${IMAGE_MIRROR}/${run_image}" "${run_image}" > /dev/null 2>&1
+            docker rmi "${IMAGE_MIRROR}/${run_image}" > /dev/null 2>&1
+        fi
+        if bash "/tmp/container_update_${emby_name}"; then
+            rm -f "/tmp/container_update_${emby_name}"
+            wait_emby_start
+            INFO "${emby_name} 更新成功"
+            return 0
+        else
+            ERROR "更新失败，创建 ${emby_name} 容器失败！"
+            exit 1
+        fi
+    fi
 
 }
 
@@ -2887,12 +3509,12 @@ function install_xiaoya_notify_cron() {
         if [ "${RETURN_DATA}" == "None" ]; then
             INFO "请输入其他参数（默认 无 ）"
             read -erp "Extra parameters:" extra_parameters
-            data_crep "w" "install_xiaoya_notify_cron"
         else
             INFO "已读取您上次设置的参数：${RETURN_DATA} (默认不更改回车继续，如果需要更改请输入新参数)"
             read -erp "Extra parameters:" extra_parameters
             [[ -z "${extra_parameters}" ]] && extra_parameters=${RETURN_DATA}
         fi
+        extra_parameters=$(data_crep "w" "install_xiaoya_notify_cron")
     fi
 
     # 组合定时任务命令
@@ -3005,12 +3627,12 @@ function install_resilio() {
         if [ "${RETURN_DATA}" == "None" ]; then
             INFO "请输入其他参数（默认 无 ）"
             read -erp "Extra parameters:" extra_parameters
-            data_crep "w" "install_xiaoya_resilio"
         else
             INFO "已读取您上次设置的参数：${RETURN_DATA} (默认不更改回车继续，如果需要更改请输入新参数)"
             read -erp "Extra parameters:" extra_parameters
             [[ -z "${extra_parameters}" ]] && extra_parameters=${RETURN_DATA}
         fi
+        extra_parameters=$(data_crep "w" "install_xiaoya_resilio")
     fi
 
     INFO "是否自动配置系统 inotify watches & instances 的数值 [Y/n]（默认 Y）"
@@ -3396,7 +4018,6 @@ function install_xiaoya_emd() {
             WARN "警告！！！ 默认请勿修改 /media 路径！！！"
             read -erp "Extra parameters:" extra_parameters
             [[ -z "${extra_parameters}" ]] && extra_parameters="--media /media"
-            data_crep "write" "install_xiaoya_emd"
         else
             INFO "已读取您上次设置的运行参数：${RETURN_DATA} (默认不更改回车继续，如果需要更改请输入新参数)"
             WARN "如果需要更改此设置请注意容器目录映射，默认媒体库路径映射到容器内的 /media 文件夹下！"
@@ -3406,9 +4027,8 @@ function install_xiaoya_emd() {
         fi
     else
         extra_parameters="--media /media"
-        data_crep "write" "install_xiaoya_emd"
     fi
-    script_extra_parameters="${extra_parameters}"
+    script_extra_parameters="$(data_crep "write" "install_xiaoya_emd")"
 
     extra_parameters=
     container_run_extra_parameters=$(cat ${DDSREM_CONFIG_DIR}/container_run_extra_parameters.txt)
@@ -3418,14 +4038,13 @@ function install_xiaoya_emd() {
         if [ "${RETURN_DATA_2}" == "None" ]; then
             INFO "请输入运行容器额外参数（默认 无 ）"
             read -erp "Extra parameters:" extra_parameters
-            data_crep "w" "install_xiaoya_emd_2"
         else
             INFO "已读取您上次设置的运行容器额外参数：${RETURN_DATA_2} (默认不更改回车继续，如果需要更改请输入新参数)"
             read -erp "Extra parameters:" extra_parameters
             [[ -z "${extra_parameters}" ]] && extra_parameters=${RETURN_DATA_2}
         fi
+        run_extra_parameters=$(data_crep "w" "install_xiaoya_emd_2")
     fi
-    run_extra_parameters="${extra_parameters}"
 
     docker_pull "ddsderek/xiaoya-emd:${IMAGE_VERSION}"
 
@@ -3578,7 +4197,21 @@ function main_xiaoya_all_emby() {
     echo -e "——————————————————————————————————————————————————————————————————————————————————"
     echo -e "${Blue}小雅Emby全家桶${Font}\n"
     echo -e "${Red}注意：2024年3月16日后Emby config同步定时任务更换为同步定时更新任务${Font}"
-    echo -e "${Red}用户需先执行一遍 菜单27 删除旧任务，再执行一遍 菜单27 创建新任务${Font}\n"
+    echo -e "${Red}用户需先执行一遍 菜单27 删除旧任务，再执行一遍 菜单27 创建新任务${Font}"
+    if docker container inspect "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" > /dev/null 2>&1; then
+        local container_status
+        container_status=$(docker inspect --format='{{.State.Status}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)")
+        case "${container_status}" in
+        "running")
+            echo -e "\n"
+            ;;
+        *)
+            echo -e "\n${Red}警告：您的小雅容器未正常启动，请先检查小雅容器后再安装全家桶${Font}\n"
+            ;;
+        esac
+    else
+        echo -e "${Red}\n警告：您未安装小雅容器，请先安装小雅容器后再安装全家桶${Font}\n"
+    fi
     echo -e "1、一键安装Emby全家桶"
     echo -e "2、下载/解压 元数据"
     echo -e "3、安装Emby（可选择版本）"
@@ -3588,10 +4221,11 @@ function main_xiaoya_all_emby() {
     echo -e "7、创建/删除 同步定时更新任务                 当前状态：$(judgment_xiaoya_notify_status)"
     echo -e "8、图形化编辑 emby_config.txt"
     echo -e "9、安装/更新/卸载 小雅元数据定时爬虫          当前状态：$(judgment_container xiaoya-emd)"
-    echo -e "10、卸载Emby全家桶"
+    echo -e "10、一键升级Emby容器（可选择镜像版本）"
+    echo -e "11、卸载Emby全家桶"
     echo -e "0、返回上级"
     echo -e "——————————————————————————————————————————————————————————————————————————————————"
-    read -erp "请输入数字 [0-10]:" num
+    read -erp "请输入数字 [0-11]:" num
     case "$num" in
     1)
         clear
@@ -3692,6 +4326,11 @@ function main_xiaoya_all_emby() {
         ;;
     10)
         clear
+        oneclick_upgrade_emby
+        return_menu "main_xiaoya_all_emby"
+        ;;
+    11)
+        clear
         uninstall_xiaoya_all_emby
         ;;
     0)
@@ -3700,7 +4339,7 @@ function main_xiaoya_all_emby() {
         ;;
     *)
         clear
-        ERROR '请输入正确数字 [0-10]'
+        ERROR '请输入正确数字 [0-11]'
         main_xiaoya_all_emby
         ;;
     esac
@@ -3714,7 +4353,21 @@ function main_xiaoya_all_jellyfin() {
     echo -e "${Sky_Blue}Jellyfin 全家桶元数据由 AI老G 更新维护，在此表示感谢！"
     echo -e "Jellyfin 全家桶安装前提条件："
     echo -e "1. 硬盘140G以上（如果无需完整安装则 60G 以上即可）"
-    echo -e "2. 内存3.5G以上空余空间${Font}\n"
+    echo -e "2. 内存3.5G以上空余空间${Font}"
+    if docker container inspect "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" > /dev/null 2>&1; then
+        local container_status
+        container_status=$(docker inspect --format='{{.State.Status}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)")
+        case "${container_status}" in
+        "running")
+            echo -e "\n"
+            ;;
+        *)
+            echo -e "\n${Red}警告：您的小雅容器未正常启动，请先检查小雅容器后再安装全家桶${Font}\n"
+            ;;
+        esac
+    else
+        echo -e "${Red}\n警告：您未安装小雅容器，请先安装小雅容器后再安装全家桶${Font}\n"
+    fi
     echo -e "1、一键安装Jellyfin全家桶"
     echo -e "2、下载/解压 元数据"
     echo -e "3、安装Jellyfin"
@@ -3925,14 +4578,27 @@ function install_xiaoya_alist_tvbox() {
     read -erp "MEM_OPT:" MEM_OPT
     [[ -z "${MEM_OPT}" ]] && MEM_OPT="-Xmx512M"
 
-    INFO "是否使用内存优化版镜像 [Y/n]（默认 n 不使用）"
-    read -erp "Native:" choose_native
-    [[ -z "${choose_native}" ]] && choose_native="n"
-    if [[ ${choose_native} == [Yy] ]]; then
-        __choose_native="native"
-    else
+    cpu_arch=$(uname -m)
+    INFO "您的CPU架构：${cpu_arch}"
+    case $cpu_arch in
+    "x86_64" | *"amd64"*)
+        INFO "是否使用内存优化版镜像 [Y/n]（默认 n 不使用）"
+        read -erp "Native:" choose_native
+        [[ -z "${choose_native}" ]] && choose_native="n"
+        if [[ ${choose_native} == [Yy] ]]; then
+            __choose_native="native"
+        else
+            __choose_native="latest"
+        fi
+        ;;
+    "aarch64" | *"arm64"* | *"armv8"* | *"arm/v8"*)
         __choose_native="latest"
-    fi
+        ;;
+    *)
+        ERROR "Xiaoya-TVBox 目前只支持 amd64 和 arm64 架构，你的架构是：$cpu_arch"
+        exit 1
+        ;;
+    esac
 
     container_run_extra_parameters=$(cat ${DDSREM_CONFIG_DIR}/container_run_extra_parameters.txt)
     if [ "${container_run_extra_parameters}" == "true" ]; then
@@ -3941,12 +4607,12 @@ function install_xiaoya_alist_tvbox() {
         if [ "${RETURN_DATA}" == "None" ]; then
             INFO "请输入其他参数（默认 无 ）"
             read -erp "Extra parameters:" extra_parameters
-            data_crep "w" "install_xiaoya_alist_tvbox"
         else
             INFO "已读取您上次设置的参数：${RETURN_DATA} (默认不更改回车继续，如果需要更改请输入新参数)"
             read -erp "Extra parameters:" extra_parameters
             [[ -z "${extra_parameters}" ]] && extra_parameters=${RETURN_DATA}
         fi
+        extra_parameters=$(data_crep "w" "install_xiaoya_alist_tvbox")
     fi
 
     if ls ${CONFIG_DIR}/*.txt 1> /dev/null 2>&1; then
@@ -3957,7 +4623,11 @@ function install_xiaoya_alist_tvbox() {
         INFO "备份数据路径：${CONFIG_DIR}/xiaoya_backup"
     fi
 
-    docker_pull "haroldli/xiaoya-tvbox:latest"
+    if ! grep "access.mypikpak.com" ${HOSTS_FILE_PATH}; then
+        echo -e "127.0.0.1\taccess.mypikpak.com" >> ${HOSTS_FILE_PATH}
+    fi
+
+    docker_pull "haroldli/xiaoya-tvbox:${__choose_native}"
 
     if [ -n "${extra_parameters}" ]; then
         docker run -itd \
@@ -3995,12 +4665,14 @@ function update_xiaoya_alist_tvbox() {
         echo -en "即将开始更新小雅Alist-TVBox${Blue} $i ${Font}\r"
         sleep 1
     done
+    container_update_extra_command="sedsh '/\/opt\/atv\/data/d; \/opt\/alist\/data/d' "/tmp/container_update_$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_tvbox_name.txt)""
     container_update "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_tvbox_name.txt)"
 
 }
 
 function uninstall_xiaoya_alist_tvbox() {
 
+    local CLEAN_CONFIG IMAGE_NAME VOLUMES
     INFO "是否${Red}删除配置文件${Font} [Y/n]（默认 Y 删除）"
     read -erp "Clean config:" CLEAN_CONFIG
     [[ -z "${CLEAN_CONFIG}" ]] && CLEAN_CONFIG="y"
@@ -4010,9 +4682,11 @@ function uninstall_xiaoya_alist_tvbox() {
         sleep 1
     done
     IMAGE_NAME="$(docker inspect --format='{{.Config.Image}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_tvbox_name.txt)")"
+    VOLUMES="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{println .}}{{end}}{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_tvbox_name.txt)" | cut -d' ' -f2 | awk 'NF' | tr '\n' ' ')"
     docker stop "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_tvbox_name.txt)"
     docker rm "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_tvbox_name.txt)"
     docker rmi "${IMAGE_NAME}"
+    docker volume rm ${VOLUMES}
     if [[ ${CLEAN_CONFIG} == [Yy] ]]; then
         INFO "清理配置文件..."
         if [ -f ${DDSREM_CONFIG_DIR}/xiaoya_alist_tvbox_config_dir.txt ]; then
@@ -4061,6 +4735,134 @@ function main_xiaoya_alist_tvbox() {
         clear
         ERROR '请输入正确数字 [0-3]'
         main_xiaoya_alist_tvbox
+        ;;
+    esac
+
+}
+
+function install_xiaoya_115_cleaner() {
+
+    local config_dir
+    if docker container inspect "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" > /dev/null 2>&1; then
+        config_dir="$(docker inspect --format='{{range $v,$conf := .Mounts}}{{$conf.Source}}:{{$conf.Destination}}{{$conf.Type}}~{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" | tr '~' '\n' | grep bind | sed 's/bind//g' | grep ":/data$" | awk -F: '{print $1}')"
+    fi
+    if [ -z "${config_dir}" ]; then
+        get_config_dir
+        config_dir=${CONFIG_DIR}
+    fi
+
+    settings_115_cookie "${config_dir}"
+
+    if [ ! -f "${config_dir}/115_key.txt" ]; then
+        touch ${config_dir}/115_key.txt
+        INFO "输入你的 115 回收站密码"
+        INFO "注意：此选项为必填项，如果您关闭了回收站密码请手动开启并输入！"
+        read -erp "Key:" password_key
+        echo -e "${password_key}" > ${config_dir}/115_key.txt
+    fi
+
+    container_run_extra_parameters=$(cat ${DDSREM_CONFIG_DIR}/container_run_extra_parameters.txt)
+    if [ "${container_run_extra_parameters}" == "true" ]; then
+        local RETURN_DATA
+        RETURN_DATA="$(data_crep "r" "install_xiaoya_115_cleaner")"
+        if [ "${RETURN_DATA}" == "None" ]; then
+            INFO "请输入其他参数（默认 无 ）"
+            read -erp "Extra parameters:" extra_parameters
+        else
+            INFO "已读取您上次设置的参数：${RETURN_DATA} (默认不更改回车继续，如果需要更改请输入新参数)"
+            read -erp "Extra parameters:" extra_parameters
+            [[ -z "${extra_parameters}" ]] && extra_parameters=${RETURN_DATA}
+        fi
+        extra_parameters=$(data_crep "w" "install_xiaoya_115_cleaner")
+    fi
+
+    docker_pull "ddsderek/xiaoya-115cleaner:latest"
+
+    docker run -d \
+        --name=xiaoya-115cleaner \
+        -v "${config_dir}:/data" \
+        --net=host \
+        -e TZ=Asia/Shanghai \
+        ${extra_parameters} \
+        --restart=always \
+        ddsderek/xiaoya-115cleaner:latest
+
+    INFO "安装完成！"
+
+}
+
+function update_xiaoya_115_cleaner() {
+
+    for i in $(seq -w 3 -1 0); do
+        echo -en "即将开始更新115清理助手${Blue} $i ${Font}\r"
+        sleep 1
+    done
+    container_update xiaoya-115cleaner
+
+}
+
+function uninstall_xiaoya_115_cleaner() {
+
+    INFO "是否${Red}删除配置文件${Font} [Y/n]（默认 Y 删除）"
+    read -erp "Clean config:" CLEAN_CONFIG
+    [[ -z "${CLEAN_CONFIG}" ]] && CLEAN_CONFIG="y"
+
+    for i in $(seq -w 3 -1 0); do
+        echo -en "即将开始卸载115清理助手${Blue} $i ${Font}\r"
+        sleep 1
+    done
+    docker stop xiaoya-115cleaner
+    docker rm xiaoya-115cleaner
+    docker rmi ddsderek/xiaoya-115cleaner:latest
+    if [[ ${CLEAN_CONFIG} == [Yy] ]]; then
+        INFO "清理配置文件..."
+        if [ -f ${DDSREM_CONFIG_DIR}/xiaoya_alist_config_dir.txt ]; then
+            OLD_CONFIG_DIR=$(cat ${DDSREM_CONFIG_DIR}/xiaoya_alist_config_dir.txt)
+            for file in "${OLD_CONFIG_DIR}/115_cleaner_only_recyclebin.txt" "${OLD_CONFIG_DIR}/115_cleaner_all_recyclebin.txt" "${OLD_CONFIG_DIR}/115_key.txt"; do
+                if [ -f "$file" ]; then
+                    rm -f "$file"
+                fi
+            done
+        fi
+    fi
+    INFO "115清理助手卸载成功！"
+
+}
+
+function main_xiaoya_115_cleaner() {
+
+    echo -e "——————————————————————————————————————————————————————————————————————————————————"
+    echo -e "${Blue}115 清理助手${Font}\n"
+    echo -e "1、安装"
+    echo -e "2、更新"
+    echo -e "3、卸载"
+    echo -e "0、返回上级"
+    echo -e "——————————————————————————————————————————————————————————————————————————————————"
+    read -erp "请输入数字 [0-3]:" num
+    case "$num" in
+    1)
+        clear
+        install_xiaoya_115_cleaner
+        return_menu "main_xiaoya_115_cleaner"
+        ;;
+    2)
+        clear
+        update_xiaoya_115_cleaner
+        return_menu "main_xiaoya_115_cleaner"
+        ;;
+    3)
+        clear
+        uninstall_xiaoya_115_cleaner
+        return_menu "main_xiaoya_115_cleaner"
+        ;;
+    0)
+        clear
+        main_return
+        ;;
+    *)
+        clear
+        ERROR '请输入正确数字 [0-3]'
+        main_xiaoya_115_cleaner
         ;;
     esac
 
@@ -4165,12 +4967,126 @@ function main_onelist() {
         ;;
     0)
         clear
-        main_return
+        main_other_tools
         ;;
     *)
         clear
         ERROR '请输入正确数字 [0-3]'
         main_onelist
+        ;;
+    esac
+
+}
+
+function install_xiaoya_proxy() {
+
+    local config_dir
+    if docker container inspect "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" > /dev/null 2>&1; then
+        config_dir="$(docker inspect --format='{{range $v,$conf := .Mounts}}{{$conf.Source}}:{{$conf.Destination}}{{$conf.Type}}~{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" | tr '~' '\n' | grep bind | sed 's/bind//g' | grep ":/data$" | awk -F: '{print $1}')"
+    else
+        ERROR "请先安装小雅容器后再使用 Xiaoya Proxy！"
+        exit 1
+    fi
+    if [ -z "${config_dir}" ]; then
+        get_config_dir
+        config_dir=${CONFIG_DIR}
+    fi
+    INFO "小雅配置文件目录：${config_dir}"
+    docker_pull "ddsderek/xiaoya-proxy:latest"
+    docker run -d \
+        --name=xiaoya-proxy \
+        --restart=always \
+        --net=host \
+        -e TZ=Asia/Shanghai \
+        ddsderek/xiaoya-proxy:latest
+    if [[ "${OSNAME}" = "macos" ]]; then
+        local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
+    else
+        local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
+    fi
+    if [ -z "${local_ip}" ]; then
+        WARN "请手动配置 ${config_dir}/xiaoya_proxy.txt 文件，内容为 http://小雅服务器IP:9988"
+    else
+        INFO "本机IP：${local_ip}"
+        echo "http://${local_ip}:9988" > ${config_dir}/xiaoya_proxy.txt
+        INFO "xiaoya_proxy.txt 配置完成！"
+    fi
+    docker restart "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
+    wait_xiaoya_start
+    INFO "安装完成！"
+
+}
+
+function update_xiaoya_proxy() {
+
+    for i in $(seq -w 3 -1 0); do
+        echo -en "即将开始更新 Xiaoya Proxy${Blue} $i ${Font}\r"
+        sleep 1
+    done
+    container_update xiaoya-proxy
+
+}
+
+function uninstall_xiaoya_proxy() {
+
+    INFO "是否${Red}删除配置文件${Font} [Y/n]（默认 Y 删除）"
+    read -erp "Clean config:" CLEAN_CONFIG
+    [[ -z "${CLEAN_CONFIG}" ]] && CLEAN_CONFIG="y"
+
+    for i in $(seq -w 3 -1 0); do
+        echo -en "即将开始卸载 Xiaoya Proxy${Blue} $i ${Font}\r"
+        sleep 1
+    done
+    docker stop xiaoya-proxy
+    docker rm xiaoya-proxy
+    docker rmi ddsderek/xiaoya-proxy:latest
+    if [[ ${CLEAN_CONFIG} == [Yy] ]]; then
+        INFO "清理配置文件..."
+        if [ -f ${DDSREM_CONFIG_DIR}/xiaoya_alist_config_dir.txt ]; then
+            OLD_CONFIG_DIR=$(cat ${DDSREM_CONFIG_DIR}/xiaoya_alist_config_dir.txt)
+            if [ -f "${OLD_CONFIG_DIR}/xiaoya_proxy.txt" ]; then
+                rm -f "${OLD_CONFIG_DIR}/xiaoya_proxy.txt"
+            fi
+        fi
+    fi
+    INFO "Xiaoya Proxy 卸载成功！"
+
+}
+
+function main_xiaoya_proxy() {
+
+    echo -e "——————————————————————————————————————————————————————————————————————————————————"
+    echo -e "${Blue}Xiaoya Proxy${Font}\n"
+    echo -e "1、安装"
+    echo -e "2、更新"
+    echo -e "3、卸载"
+    echo -e "0、返回上级"
+    echo -e "——————————————————————————————————————————————————————————————————————————————————"
+    read -erp "请输入数字 [0-3]:" num
+    case "$num" in
+    1)
+        clear
+        install_xiaoya_proxy
+        return_menu "main_xiaoya_proxy"
+        ;;
+    2)
+        clear
+        update_xiaoya_proxy
+        return_menu "main_xiaoya_proxy"
+        ;;
+    3)
+        clear
+        uninstall_xiaoya_proxy
+        return_menu "main_xiaoya_proxy"
+        ;;
+    0)
+        clear
+        main_other_tools
+        ;;
+    *)
+        clear
+        ERROR '请输入正确数字 [0-3]'
+        main_xiaoya_proxy
         ;;
     esac
 
@@ -4913,13 +5829,17 @@ function main_other_tools() {
 
     echo -e "——————————————————————————————————————————————————————————————————————————————————"
     echo -e "${Blue}其他工具${Font}\n"
-    echo -e "1、安装/更新/卸载 Portainer                   当前状态：$(judgment_container "${portainer_name}")"
-    echo -e "2、安装/更新/卸载 Auto_Symlink                当前状态：$(judgment_container "${auto_symlink_name}")"
-    echo -e "3、查看系统磁盘挂载"
-    echo -e "4、安装/卸载 CasaOS"
+    echo -ne "${INFO} 界面加载中...${Font}\r"
+    echo -e "1、安装/更新/卸载 Portainer                   当前状态：$(judgment_container "${portainer_name}")
+2、安装/更新/卸载 Auto_Symlink                当前状态：$(judgment_container "${auto_symlink_name}")
+3、安装/更新/卸载 Onelist                     当前状态：$(judgment_container "${xiaoya_onelist_name}")
+4、安装/更新/卸载 Xiaoya Proxy                当前状态：$(judgment_container xiaoya-proxy)"
+    echo -e "5、查看系统磁盘挂载"
+    echo -e "6、安装/卸载 CasaOS"
+    echo -e "7、AI老G 安装脚本"
     echo -e "0、返回上级"
     echo -e "——————————————————————————————————————————————————————————————————————————————————"
-    read -erp "请输入数字 [0-4]:" num
+    read -erp "请输入数字 [0-7]:" num
     case "$num" in
     1)
         clear
@@ -4931,6 +5851,14 @@ function main_other_tools() {
         ;;
     3)
         clear
+        main_onelist
+        ;;
+    4)
+        clear
+        main_xiaoya_proxy
+        ;;
+    5)
+        clear
         INFO "系统磁盘挂载情况:"
         show_disk_mount
         INFO "按任意键返回菜单"
@@ -4938,9 +5866,13 @@ function main_other_tools() {
         clear
         main_other_tools
         ;;
-    4)
+    6)
         clear
         main_casaos
+        ;;
+    7)
+        clear
+        bash <(curl -sSLf https://xy.ggbond.org/xy/xy_install.sh)
         ;;
     0)
         clear
@@ -4948,44 +5880,10 @@ function main_other_tools() {
         ;;
     *)
         clear
-        ERROR '请输入正确数字 [0-4]'
+        ERROR '请输入正确数字 [0-7]'
         main_other_tools
         ;;
     esac
-
-}
-
-function love_aliyun_and_fuck() {
-
-    local config_dir local_ip
-    INFO "AliyunPan ありがとう、あなたのせいで世界は爆発する"
-    docker_pull ddsderek/xiaoya-glue:python
-    config_dir="$(docker inspect --format='{{range $v,$conf := .Mounts}}{{$conf.Source}}:{{$conf.Destination}}{{$conf.Type}}~{{end}}' "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)" | tr '~' '\n' | grep bind | sed 's/bind//g' | grep ":/data$" | awk -F: '{print $1}')"
-    if [ -n "${config_dir}" ]; then
-        if [[ "${OSNAME}" = "macos" ]]; then
-            local_ip=$(ifconfig "$(route -n get default | grep interface | awk -F ':' '{print$2}' | awk '{$1=$1};1')" | grep 'inet ' | awk '{print$2}')
-        else
-            local_ip=$(ip address | grep inet | grep -v 172.17 | grep -v 127.0.0.1 | grep -v inet6 | awk '{print $2}' | sed 's/addr://' | head -n1 | cut -f1 -d"/")
-        fi
-        if [ -z "${local_ip}" ]; then
-            local_ip="小雅服务器IP"
-        fi
-        INFO "请浏览器访问 http://${local_ip}:34256 并使用阿里云盘APP扫描二维码！"
-        docker run -i --rm \
-            -v "$config_dir:/data" \
-            -e LANG=C.UTF-8 \
-            --net=host \
-            ddsderek/xiaoya-glue:python \
-            /alitoken2.py
-        INFO "清理镜像中..."
-        docker rmi ddsderek/xiaoya-glue:python > /dev/null 2>&1
-        INFO "开始更新小雅容器..."
-        container_update "$(cat ${DDSREM_CONFIG_DIR}/container_name/xiaoya_alist_name.txt)"
-        INFO "操作全部完成！"
-    else
-        ERROR "小雅配置文件目录获取失败咯！请检查小雅容器是否已创建！"
-        exit 1
-    fi
 
 }
 
@@ -5001,12 +5899,12 @@ function main_return() {
             out_tips="${Red}警告：当前环境无法访问Docker镜像仓库，请输入96进入Docker镜像源设置更改镜像源${Font}\n"
         fi
     fi
-    echo -e "${out_tips}1、安装/更新/卸载 小雅Alist                   当前状态：$(judgment_container "${xiaoya_alist_name}")
+    echo -e "${out_tips}1、安装/更新/卸载 小雅Alist & 账号管理        当前状态：$(judgment_container "${xiaoya_alist_name}")
 2、安装/卸载 小雅Emby全家桶                   当前状态：$(judgment_container "${xiaoya_emby_name}")
 3、安装/卸载 小雅Jellyfin全家桶               当前状态：$(judgment_container "${xiaoya_jellyfin_name}")
 4、安装/更新/卸载 小雅助手（xiaoyahelper）    当前状态：$(judgment_container xiaoyakeeper)
-5、安装/更新/卸载 小雅Alist-TVBox             当前状态：$(judgment_container "${xiaoya_tvbox_name}")
-6、安装/更新/卸载 Onelist                     当前状态：$(judgment_container "${xiaoya_onelist_name}")
+5、安装/更新/卸载 小雅Alist-TVBox（非原版）   当前状态：$(judgment_container "${xiaoya_tvbox_name}")
+6、安装/更新/卸载 115清理助手                 当前状态：$(judgment_container xiaoya-115cleaner)
 7、Docker Compose 安装/卸载 小雅及全家桶（实验性功能）
 8、其他工具 | Script info: ${DATE_VERSION} OS: ${_os},${OSNAME},${is64bit}
 9、高级配置 | Docker version: ${Blue}${DOCKER_VERSION}${Font} ${IP_CITY}
@@ -5036,7 +5934,7 @@ function main_return() {
         ;;
     6)
         clear
-        main_onelist
+        main_xiaoya_115_cleaner
         ;;
     7)
         clear
@@ -5056,7 +5954,8 @@ function main_return() {
         ;;
     fuckaliyun)
         clear
-        love_aliyun_and_fuck
+        INFO "AliyunPan ありがとう、あなたのせいで世界は爆発する"
+        qrcode_aliyunpan_tvtoken
         return_menu "main_return"
         ;;
     0)
@@ -5079,13 +5978,17 @@ function first_init() {
 
     root_need
 
+    INFO "获取系统信息中..."
     get_os
 
+    INFO "获取 IP 地址中..."
     CITY="$(curl -fsSL -m 10 -s http://ipinfo.io/json | sed -n 's/.*"city": *"\([^"]*\)".*/\1/p')"
     if [ -n "${CITY}" ]; then
         IP_CITY="IP City: ${Yellow}${CITY}${Font}"
+        INFO "获取 IP 地址成功！"
     fi
 
+    INFO "检查 Docker 版本"
     DOCKER_VERSION="$(docker -v | sed "s/Docker version //g" | cut -d',' -f1)"
 
     if [ ! -d ${DDSREM_CONFIG_DIR} ]; then
@@ -5095,6 +5998,7 @@ function first_init() {
     if [ -f /xiaoya_alist_media_dir.txt ]; then
         mv /xiaoya_alist_media_dir.txt ${DDSREM_CONFIG_DIR}
     fi
+    INFO "初始化容器名称中..."
     init_container_name
 
     if [ ! -f ${DDSREM_CONFIG_DIR}/container_run_extra_parameters.txt ]; then
@@ -5121,6 +6025,7 @@ function first_init() {
         echo 'true' > ${DDSREM_CONFIG_DIR}/xiaoya_connectivity_detection.txt
     fi
 
+    INFO "设置 Docker 镜像源中..."
     if [ ! -f "${DDSREM_CONFIG_DIR}/image_mirror.txt" ]; then
         if ! auto_choose_image_mirror; then
             echo 'docker.io' > ${DDSREM_CONFIG_DIR}/image_mirror.txt
@@ -5130,6 +6035,7 @@ function first_init() {
         touch ${DDSREM_CONFIG_DIR}/image_mirror_user.txt
     fi
 
+    INFO "清理旧配置文件中..."
     if [ -f ${DDSREM_CONFIG_DIR}/xiaoya_emby_url.txt ]; then
         rm -rf ${DDSREM_CONFIG_DIR}/xiaoya_emby_url.txt
     fi
@@ -5156,6 +6062,8 @@ function first_init() {
             echo -e "alias xiaoya='bash -c \"\$(curl -sLk https://ddsrem.com/xiaoya_install.sh)\"'" >> /etc/profile
         fi
     fi
+    INFO "初始化完成！"
+    sleep 1
 
 }
 
