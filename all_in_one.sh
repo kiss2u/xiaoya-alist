@@ -1477,11 +1477,11 @@ function install_xiaoya_alist() {
         INFO "alist: ${Sky_Blue}http://ip:5678${Font}"
         if [[ ${force_login} == [Yy] ]] || [[ -f "${CONFIG_DIR}/guestpass.txt" ]]; then
             _password="$(head -n 1 "${CONFIG_DIR}/guestpass.txt")"
-            INFO "webdav: ${Sky_Blue}http://ip:5678/dav${Font}, 用户密码: ${Sky_Blue}guest/${_password}${Font}"
+            INFO "webdav: ${Sky_Blue}http://ip:5678/dav${Font}, 用户密码: ${Sky_Blue}dav/${_password}${Font}"
         else
-            INFO "webdav: ${Sky_Blue}http://ip:5678/dav${Font}, 默认用户密码: ${Sky_Blue}guest/guest_Api789${Font}"
+            INFO "webdav: ${Sky_Blue}http://ip:5678/dav${Font}, 默认用户密码: ${Sky_Blue}dav/guest_Api789${Font}"
         fi
-        INFO "tvbox: ${Sky_Blue}http://ip:5678/tvbox/my_ext.json${Font}"
+        INFO "tvbox: ${Sky_Blue}http://ip:5678/tvbox/my_ext_jar.json${Font}"
     else
         ERROR "安装失败！"
     fi
