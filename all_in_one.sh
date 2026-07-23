@@ -476,11 +476,12 @@ function qrcode_mode_choose() {
 
     if [ "${2}" == "/115cookie/115cookie.py" ]; then
         while true; do
-            qrcode_apps=('alipaymini' 'web' 'ios' 'android' 'windows' 'mac' 'linux' 'wechatmini')
+            qrcode_apps=('alipaymini' 'web' 'ios' '115ios' 'android' '115android' '115ipad' 'tv' 'qandroid' 'wechatmini' 'harmony')
+            qrcode_app_names=('115生活（支付宝小程序）' '115生活（网页端）' '115生活（iOS端）' '115（iOS端）' '115生活（Android端）' '115（Android端）' '115（iPad端）' '115生活（Android电视端）' '115管理（Android端）' '115生活（微信小程序）' '115（鸿蒙端）')
             find_qrcode_app=false
             interface=
             for i in "${!qrcode_apps[@]}"; do
-                interface="${interface}$((i + 1))、${qrcode_apps[$i]}\n"
+                interface="${interface}$((i + 1))、${qrcode_app_names[$i]} [${qrcode_apps[$i]}]\n"
             done
             INFO "请选择扫码绑定的设备（默认 1）"
             echo -e "${interface}\c"
